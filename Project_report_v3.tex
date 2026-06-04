@@ -1,0 +1,132 @@
+\documentclass{article}
+\usepackage{spconf,amsmath,graphicx,hyperref}
+\usepackage{bm,amsfonts,amssymb,amsbsy}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{cleveref}
+\usepackage{algorithm, algorithmic}
+\usepackage{subcaption, adjustbox}
+\usepackage{listings}
+\usepackage{qrcode}
+
+\providecommand{\defeq}{\mathrel{:=}}
+
+\title{Spatial Regularization in Federated Learning: \\ Predicting Temperature via Network Consensus}
+\name{Balint Takacs}
+\address{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+In real-world Federated Learning (FL) applications, individual clients---such as weather stations---often possess limited, noisy, or geographically sparse data, making them susceptible to overfitting. This project tackles the challenge of data scarcity by connecting Finnish Meteorological Institute (FMI) weather stations into a spatial graph. By leveraging the Graph Total Variation Minimization (GTVMin) framework, we impose a structural prior on the learning process: neighboring stations should learn structurally similar local models. We formulate the weather prediction task as a distributed optimization problem, solved via a block-wise minimization method. Finally, we establish an experimental setup to evaluate two distinct FL graph topologies (Delaunay Triangulation versus $k$-Nearest Neighbors) against local-only and global shared model baselines.
+\end{abstract}
+
+\begin{keywords}
+Federated learning, networks, variations, weather prediction, machine learning
+\end{keywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+In real-world Federated Learning (FL) \cite{AaltoDictML} applications, individual clients---in this case, weather stations---often possess limited, noisy, or geographically sparse data. When a single weather station attempts to train a machine learning model using only its own small dataset, the model is highly susceptible to overfitting and typically generalizes poorly to unseen data.
+
+This project tackles the challenge of data scarcity by connecting weather stations into a spatial graph. By leveraging the Graph Total Variation Minimization (GTVMin) framework \cite{Jung2025}, we impose a structural prior on the learning process: neighboring stations (nodes connected by edges) should learn local models that are structurally similar. This injects the physical domain knowledge that weather patterns are spatially continuous, allowing individual stations to collaborate without centralizing their raw data. 
+
+The remainder of this report expands strictly on this premise. Section~\ref{sec:pf} formalizes the network setup and local modeling task. Section~\ref{sec:meth} derives the GTVMin methodology and local update operators. Section~\ref{sec:experiments} details the planned numerical evaluation—comparing structurally distinct FL configurations. Finally, Section~\ref{sec:reproducibility} provides explicit implementation specifications to ensure complete algorithmic reproducibility.
+
+\section{Problem Formulation}
+\label{sec:pf}
+
+This section formally maps the physical weather prediction problem into the Federated Learning framework, defining the data structures, network configuration, and the learning objective for individual stations. The network is modeled over an empirical graph $\mathcal{G} = (\mathcal{V}, \mathcal{E}, A)$.
+
+\textbf{Data and Task:} The predictive task is estimating Air Temperature based on local meteorological factors. Features ($\mathbf{x}$) are derived from available meteorological readings including Cloud amount, Dew-point temperature, Gust speed, Horizontal visibility, Precipitation amount, Precipitation intensity, Present weather (auto), Pressure (msl), Relative humidity, Snow depth, Wind direction, and Wind speed. The label ($y$) is Air temperature. Each station $i$ has a local dataset of $m_i$ readings: $\mathcal{D}^{(i)} = \{(\mathbf{x}^{(i)}_1, y^{(i)}_1), \dots, (\mathbf{x}^{(i)}_{m_i}, y^{(i)}_{m_i})\}$.
+
+\textbf{Network Topology and Models:} Each node $i \in \mathcal{V}$ represents an FMI weather station. Our primary structural choice for edges $\mathcal{E}$ is defined by the Delaunay Triangulation of the stations' geographic coordinates (longitude, latitude). The Delaunay Triangulation creates a non-overlapping mesh of triangles connecting the points such that no point lies inside the circumcircle of any triangle. This mathematically guarantees that adjacent stations are connected naturally without relying on arbitrary, hard-coded distance thresholds. Edge Weights $A_{i,j}$ are determined by the Haversine distance. For an edge between station $i$ and $j$, $A_{i,j} = \max(0, 60 - \text{dist}(i,j))$. This ensures that only local climatic neighborhoods influence each other, degrading linearly to 0 at 60km. 
+
+\textbf{Hypothesis Class and Loss:} We use Linear Regression. For each station $i$, the model is parameterized by a weight vector $\mathbf{w}^{(i)}$, with predictions $\hat{y} = (\mathbf{w}^{(i)})^T \mathbf{x}$. The local loss $L_i(\mathbf{w}^{(i)})$ is the Mean Squared Error (MSE) computed on dataset $\mathcal{D}^{(i)}$.
+
+\section{Methodology}
+\label{sec:meth}
+
+We formulate the FL application as a GTVMin optimization problem:
+\begin{equation}
+\min_{\mathbf{w}^{(1)},\ldots,\mathbf{w}^{(n)}} \sum_{i=1}^{n} L_i(\mathbf{w}^{(i)}) + \alpha \sum_{\{i,j\} \in \mathcal{E}} A_{i,j} \|\mathbf{w}^{(i)} - \mathbf{w}^{(j)}\|_2^2
+\label{eq:gtvmin}
+\end{equation}
+The first term ensures fidelity to local data, while the second term uses the $\ell_2$-norm squared as the variation measure $d(\mathbf{w}^{(i)}, \mathbf{w}^{(j)})$ to enforce consensus among neighboring models. Parameter $\alpha$ controls this trade-off.
+
+We solve this via block-wise optimization. From the perspective of node $i$, holding neighbors fixed, let $d_i = \sum_{j \in \mathcal{N}^{(i)}} A_{i,j}$, and $\mathbf{\bar{w}}^{(i)} = \frac{1}{d_i} \sum_{j \in \mathcal{N}^{(i)}} A_{i,j} \mathbf{w}^{(j)}$.
+At iteration $t+1$, node $i$ updates its model by evaluating the block operator $\mathcal{F}^{(i)}$:
+\begin{equation}
+\mathcal{F}^{(i)} = \arg\min_{\mathbf{w}} \left( L_i(\mathbf{w}) + \alpha \cdot d_i \|\mathbf{w} - \mathbf{\bar{w}}^{(i, t)}\|_2^2 \right)
+\label{eq:blockop}
+\end{equation}
+By taking the derivative with respect to $\mathbf{w}$ and setting it to zero, we arrive at the fixed-point equation:
+\begin{equation}
+\mathbf{w}^{(i, t+1)} = \left( X_i^T X_i + \alpha \cdot d_i I \right)^{-1} \left( X_i^T y_i + \alpha \cdot d_i \mathbf{\bar{w}}^{(i, t)} \right)
+\end{equation}
+
+This mimics Ridge Regression centered around $\mathbf{\bar{w}}^{(i, t)}$. We realize this \textbf{explicitly} using a data augmentation trick with the \texttt{scikit-learn} \cite{pedregosa2011scikit} class \texttt{LinearRegression}. We augment local training features $X_i$ with $\sqrt{\alpha d_i} I$, and labels $y_i$ with $\sqrt{\alpha d_i} \mathbf{\bar{w}}^{(i,t)}$. We then call \texttt{.fit()} on the augmented datasets to compute $\mathcal{F}^{(i)}$.
+
+\section{Numerical Experiments}
+\label{sec:experiments}
+
+This section documents the quantitative evaluation of the proposed framework. The time-series data will be chronologically divided into Train (60\%), Validation (20\%), and Test (20\%) sets to intuitively respect temporal causality.
+
+To thoroughly evaluate the framework and compare structurally distinct design choices, we test two distinct FL graph constructions:
+\begin{enumerate}
+    \item \textbf{FL with Delaunay Triangulation Graph:} The primary GTVMin method employing the planar, natural-boundary graph described in Section~\ref{sec:pf}.
+    \item \textbf{FL with $k$-Nearest Neighbors ($k$-NN) Graph:} An alternative FL system where edges are constructed by connecting each station to its $k=3$ geographically closest peers, differing structurally from the Delaunay mesh.
+\end{enumerate}
+
+These two FL systems will be quantitatively compared against the following meaningful baselines:
+\begin{itemize}
+    \item \textit{Local-only Training} ($\alpha = 0$): Independent local models with zero edge weighting/communication.
+    \item \textit{Global Shared Model} ($\alpha \to \infty$): A single model trained on universally pooled data. This model uses an inherently distinct graph construction (fully connected with infinite weights) and relies on its own separate $L_2$ (Ridge) structural modeling.
+\end{itemize}
+
+Hyperparameter tuning for the optimal $\alpha$ (for both FL systems) will be performed over a log-scale grid computing the MSE on the validation set. We expect the GTVMin models to outperform local models by mitigating data scarcity, and beat global models by preserving spatial microclimates. The comparison between the Delaunay and $k$-NN structural graph choices will reveal which topology best aligns with physical weather correlations.
+
+\section{Reproducibility Specifications}
+\label{sec:reproducibility}
+
+To satisfy the stringent reproducibility requirements (such that an LLM can parse this report and generate a working implementation without guessing any missing details), we explicitly define the configuration and algorithm.
+
+\textbf{1. Data Configuration:}
+\begin{itemize}
+    \item \textbf{Time Range:} January 1, 2024 to February 1, 2024.
+    \item \textbf{Stations:} The 203 unique FMI stations returned by the spatial bounding box $19,59,32,72$ (e.g., Alaj\"arvi M\"oksy 101533, Asikkala Pulkkilanharju 101185, etc.).
+    \item \textbf{Preprocessing:} Features are standardized to zero mean and unit variance per station.
+\end{itemize}
+
+\textbf{2. Hyperparameters and Initialization:}
+\begin{itemize}
+    \item \textbf{Regularization Parameter:} $\alpha = 10.0$ (best value from validation).
+    \item \textbf{Learning Rate ($\eta$):} N/A (Closed-form exact OLS solver used).
+    \item \textbf{Convergence Criteria:} Maximum of $T_{max} = 50$ iterations or until the change in average validation MSE $< 10^{-4}$.
+    \item \textbf{Initialization:} Local model parameters $\mathbf{w}^{(i, 0)}$ are initialized by independently training an ordinary Linear Regression model on each station's local training data.
+    \item \textbf{Random Seed:} 42.
+\end{itemize}
+
+\textbf{3. Algorithmic Loop (Block Coordinate Descent):}
+\begin{algorithmic}[1]
+\STATE \textbf{Initialize} models $\mathbf{w}^{(i, 0)}$ for all stations $i \in \{1,\ldots,n\}$.
+\FOR{$t = 1, 2, \dots, T_{max}$}
+    \FOR{each station $i$}
+        \STATE Compute message: $\mathbf{\bar{w}}^{(i, t-1)} = \frac{1}{d_i} \sum_{j \in \mathcal{N}^{(i)}} A_{i,j} \mathbf{w}^{(j, t-1)}$
+        \STATE Compute scaling: $S = \sqrt{m_i \cdot \alpha \cdot d_i}$ (where $m_i$ is train set size, adjusting for MSE loss scale).
+        \STATE Augment data: $\tilde{X}_i = \begin{bmatrix} X_i \\ S \cdot I \end{bmatrix}$, $\tilde{y}_i = \begin{bmatrix} y_i \\ S \cdot \mathbf{\bar{w}}^{(i, t-1)} \end{bmatrix}$
+        \STATE Update model: $\mathbf{w}^{(i, t)} = \texttt{LinearRegression().fit}(\tilde{X}_i, \tilde{y}_i)\texttt{.coef\_}$
+    \ENDFOR
+    \STATE Evaluate validation MSE. Break if change $< 10^{-4}$.
+\ENDFOR
+\end{algorithmic}
+
+\begin{thebibliography}{9}
+	\bibitem{Jung2025} A.~Jung, \textit{Federated Learning: From Theory to Practice}, Springer, 2026. Arxiv Preprint: \url{https://arxiv.org/abs/2505.19183}.
+	\bibitem{AaltoDictML} A.~Jung (Editor), \textit{Aalto Dictionary of Machine Learning}, \url{https://aaltodictionaryofml.github.io/}, 2026.
+    \bibitem{pedregosa2011scikit} F.~Pedregosa et al., \textit{Scikit-learn: Machine Learning in Python}, JMLR, 12, 2825-2830, 2011.
+\end{thebibliography}
+
+\end{document}

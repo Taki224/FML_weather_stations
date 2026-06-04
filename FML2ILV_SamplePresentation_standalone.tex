@@ -1,0 +1,291 @@
+% !TEX root = FML2ILV_SamplePresentation_standalone.tex
+% Standalone sample project presentation for FML2ILV (IMC Krems, Spring 2026).
+% No dependency on FML2ILV_Header.tex or the Aalto Dictionary repo.
+% Compiles with `latexmk -pdf` against a standard TeX Live installation.
+
+\documentclass[12pt]{beamer}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+% ----------------------------------------------------------------------
+% Math macros (replacements for the ml_macros.tex entries used in this
+% deck; defined here so the file is self-contained).
+% ----------------------------------------------------------------------
+\providecommand{\defeq}{\mathrel{:=}}
+\newcommand{\nodeidx}{i}
+\newcommand{\nrnodes}{n}
+\newcommand{\iteridx}{t}
+\newcommand{\edges}{\mathcal{E}}
+\newcommand{\edgeweight}{A}
+\newcommand{\fixedpointop}{\mathcal{F}}
+\newcommand{\featuremtx}{\mathbf{X}}
+\newcommand{\labelvec}{\mathbf{y}}
+\newcommand{\truelabel}{y}
+\newcommand{\neighbourhood}[1]{\mathcal{N}^{(#1)}}
+\newcommand{\localparams}[1]{\mathbf{w}^{(#1)}}
+\newcommand{\localparamsiter}[2]{\mathbf{w}^{(#1,#2)}}
+\newcommand{\localdataset}[1]{\mathcal{D}^{(#1)}}
+\newcommand{\locallossfunc}[2]{L_{#1}\!\left(#2\right)}
+
+% ----------------------------------------------------------------------
+% Title block
+% ----------------------------------------------------------------------
+\title{Federated Learning Project}
+\subtitle{\Huge Predicting Daily Maximum Temperature with GTVMin}
+\author{Student Name -- IMC Krems, Spring 2026}
+\date{06 June 2026}
+
+\begin{document}
+
+\begin{frame}
+    \titlepage
+\end{frame}
+
+\begin{frame}{Outline}
+    \tableofcontents
+\end{frame}
+
+
+%====================================================
+\section{FL Application}
+%====================================================
+
+\begin{frame}{FL Application}
+\begin{itemize}\setlength{\itemsep}{4mm}
+    \item \textbf{Task:} predict daily tmax from same-day tmin per station
+    \item \textbf{Predictor:} $\truelabel^{(\nodeidx)} \approx h^{(\nodeidx)}(x^{(\nodeidx)})$
+    \item \textbf{Data:} FMI Open Data, 20 stations, 01--20 March 2025
+\end{itemize}
+
+\vspace{4mm}
+\textbf{Why federated:}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item little local data ($m_{\nodeidx} = 20$)
+    \item climate varies south $\to$ north
+    \item single global model: too coarse
+    \item neighbours share weather regime
+\end{itemize}
+\end{frame}
+
+
+%====================================================
+\section{FL Network}
+%====================================================
+
+\begin{frame}{FL Network: Nodes}
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\begin{itemize}\setlength{\itemsep}{3mm}
+    \item $\nrnodes = 20$ FMI stations
+    \item local data:\\
+          $\localdataset{\nodeidx} = \{(x^{(\nodeidx)}_k, \truelabel^{(\nodeidx)}_k)\}_{k=1}^{20}$
+    \item local model:\\
+          $h^{(\nodeidx)}(x) = w^{(\nodeidx)} x + b^{(\nodeidx)}$
+    \item $\localparams{\nodeidx} = (w^{(\nodeidx)}, b^{(\nodeidx)})$
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\includegraphics[width=\textwidth]{fl_network.png}
+\end{column}
+\end{columns}
+\end{frame}
+
+\begin{frame}{FL Network: Edges}
+\textbf{Construction:} K-nearest neighbours, $K = 3$, haversine distance.
+
+\vspace{4mm}
+\textbf{Weights:}
+\[
+    \edgeweight_{\nodeidx,\nodeidx'}
+    = \exp\!\left(-\,\frac{D_{\nodeidx,\nodeidx'}^{2}}{\sigma^{2}}\right),
+    \quad \sigma = 200\ \mathrm{km}.
+\]
+
+\vspace{4mm}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item $D \ll \sigma$ $\Rightarrow$ $\edgeweight \approx 1$
+    \item $D \gg \sigma$ $\Rightarrow$ $\edgeweight \approx 0$
+    \item graph connected $\Rightarrow$ info flows Helsinki $\leftrightarrow$ Ivalo
+\end{itemize}
+\end{frame}
+
+\begin{frame}{FL Network: Local Loss}
+\textbf{Squared error at each station:}
+\[
+    \locallossfunc{\nodeidx}{\localparams{\nodeidx}}
+    = \frac{1}{m_{\nodeidx}}
+    \sum_{k=1}^{m_{\nodeidx}}
+    \bigl(\,h^{(\nodeidx)}(x^{(\nodeidx)}_k) - \truelabel^{(\nodeidx)}_k\,\bigr)^{2}.
+\]
+
+\vspace{6mm}
+\textbf{Choice rationale:}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item temperature continuous $\Rightarrow$ regression
+    \item closed-form block update
+    \item compatible with \texttt{sklearn.Ridge}
+\end{itemize}
+\end{frame}
+
+
+%====================================================
+\section{GTVMin}
+%====================================================
+
+\begin{frame}{GTVMin: Variation Measure}
+\textbf{Squared-$\ell_2$ variation:}
+\[
+    d\bigl(\localparams{\nodeidx},\localparams{\nodeidx'}\bigr)
+    = \bigl\|\localparams{\nodeidx} - \localparams{\nodeidx'}\bigr\|_{2}^{2}.
+\]
+
+\vspace{4mm}
+\textbf{Full objective:}
+\[
+    \min_{\localparams{1},\ldots,\localparams{\nrnodes}}
+    \sum_{\nodeidx=1}^{\nrnodes} \locallossfunc{\nodeidx}{\localparams{\nodeidx}}
+    + \alpha\!\!\sum_{\{\nodeidx,\nodeidx'\}\in\edges}\!\!
+    \edgeweight_{\nodeidx,\nodeidx'}\,
+    \bigl\|\localparams{\nodeidx} - \localparams{\nodeidx'}\bigr\|_{2}^{2}.
+\]
+
+\vspace{4mm}
+\textbf{Parameter:} $\alpha = 0.1$ (validation-tuned).
+\end{frame}
+
+
+%====================================================
+\section{FL Algorithm}
+%====================================================
+
+\begin{frame}{FL Algorithm: Local Update}
+\textbf{Block-wise operator:}
+\[
+    \fixedpointop^{(\nodeidx)}\!(\ldots)
+    = \arg\min_{\localparams{\nodeidx}}
+    \Bigl\{
+    \locallossfunc{\nodeidx}{\localparams{\nodeidx}}
+    + \alpha s_{\nodeidx}
+    \bigl\|\localparams{\nodeidx} - \bar{\boldsymbol{\theta}}_{\nodeidx}\bigr\|_{2}^{2}
+    \Bigr\}.
+\]
+
+\vspace{4mm}
+\textbf{Neighbour aggregate:}
+\[
+    s_{\nodeidx} = \!\!\sum_{\nodeidx'\in\neighbourhood{\nodeidx}}\!\!
+    \edgeweight_{\nodeidx,\nodeidx'},
+    \qquad
+    \bar{\boldsymbol{\theta}}_{\nodeidx}
+    = \frac{1}{s_{\nodeidx}}
+    \!\!\sum_{\nodeidx'\in\neighbourhood{\nodeidx}}\!\!
+    \edgeweight_{\nodeidx,\nodeidx'}\,\localparams{\nodeidx'}.
+\]
+\end{frame}
+
+\begin{frame}{FL Algorithm: scikit-learn}
+\textbf{Substitution} $\mathbf{u} = \localparams{\nodeidx} - \bar{\boldsymbol{\theta}}_{\nodeidx}$
+$\Rightarrow$ plain Ridge:
+\[
+    \min_{\mathbf{u}}\;
+    \bigl\|\featuremtx^{(\nodeidx)} \mathbf{u} - (\labelvec^{(\nodeidx)}
+    - \featuremtx^{(\nodeidx)}\bar{\boldsymbol{\theta}}_{\nodeidx})\bigr\|_{2}^{2}
+    + \alpha s_{\nodeidx}\|\mathbf{u}\|_{2}^{2}.
+\]
+
+\vspace{3mm}
+\textbf{Implementation:}
+\begin{center}
+\texttt{Ridge(alpha=}$\alpha s_\nodeidx$\texttt{, fit\_intercept=False)}\\
+\texttt{\;.fit(X\_aug, y - X\_aug @ theta\_bar)}
+\end{center}
+
+\vspace{3mm}
+\textbf{Iteration:} synchronous, $T = 50$ rounds,
+$\localparamsiter{\nodeidx}{0} = \mathbf{0}$
+\[
+    \localparamsiter{\nodeidx}{\iteridx+1}
+    = \fixedpointop^{(\nodeidx)}\!\bigl(\localparamsiter{1}{\iteridx},\ldots,\localparamsiter{\nrnodes}{\iteridx}\bigr).
+\]
+\end{frame}
+
+
+%====================================================
+\section{Numerical Experiments}
+%====================================================
+
+\begin{frame}{Experiments: Setup}
+\textbf{Data split (chronological, time series):}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item train: days 1--12 (60\%)
+    \item validation: days 13--16 (20\%, used to tune $\alpha$)
+    \item test: days 17--20 (20\%)
+\end{itemize}
+
+\vspace{4mm}
+\textbf{Three systems compared:}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item \textbf{Baseline:} local-only Ridge per station ($\alpha = 0$)
+    \item \textbf{FL-A:} GTVMin, $K\!=\!3$ KNN graph, Gaussian weights
+    \item \textbf{FL-B:} GTVMin, $K\!=\!5$ KNN graph, Gaussian weights
+\end{itemize}
+
+\vspace{4mm}
+FL-A vs.\ FL-B differ in \emph{graph construction} --- a structural design
+choice, not a hyper-parameter.
+\end{frame}
+
+\begin{frame}{Results}
+\textbf{Mean MSE (averaged over 20 stations):}
+
+\vspace{3mm}
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{lccc}
+\hline
+\textbf{System} & \textbf{Train} & \textbf{Val} & \textbf{Test} \\
+\hline
+Baseline ($\alpha = 0$)            & 3.21 & 4.72 & 4.91 \\
+FL-A (K=3)                          & 3.78 & 4.18 & \textbf{4.40} \\
+FL-B (K=5)                          & 3.62 & 4.34 & 4.51 \\
+\hline
+\end{tabular}
+\end{center}
+
+\vspace{3mm}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item baseline overfits (train $\ll$ test); FL regularises
+    \item FL-A beats FL-B on test $\Rightarrow$ sparser graph generalises better
+    \item largest gain in northern stations (sparse, more neighbour borrowing)
+\end{itemize}
+\end{frame}
+
+
+%====================================================
+\section{Conclusion}
+%====================================================
+
+\begin{frame}{Conclusion}
+\textbf{Worked:}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item GTVMin (FL-A) $\Rightarrow$ test MSE down $\approx 10\%$ vs.\ baseline
+    \item Ridge block update converges in $\leq 20$ rounds
+    \item $K\!=\!3$ Gaussian-weighted graph beats $K\!=\!5$
+\end{itemize}
+
+\vspace{4mm}
+\textbf{Limitations / next:}
+\begin{itemize}\setlength{\itemsep}{2mm}
+    \item 20 days only $\Rightarrow$ noisy estimates
+    \item linear $h^{(\nodeidx)}$ restrictive $\Rightarrow$ try polynomial / kernel
+    \item edge weights heuristic $\Rightarrow$ data-driven graph learning
+\end{itemize}
+
+\vspace{6mm}
+\centering\textbf{Thank you --- questions?}
+\end{frame}
+
+\end{document}
